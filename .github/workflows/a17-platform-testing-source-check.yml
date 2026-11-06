@@ -1,0 +1,89 @@
+name: Android 17 platform_testing source gate
+
+on:
+  push:
+    branches:
+      - audit/a17-platform-testing-source-20261106
+    paths:
+      - 'audit/check_platform_testing_source.py'
+      - 'docs/ANDROID_17_PLATFORM_TESTING_SOURCE_AUDIT.md'
+      - '.github/workflows/a17-platform-testing-source-check.yml'
+  pull_request:
+    paths:
+      - 'audit/check_platform_testing_source.py'
+      - 'docs/ANDROID_17_PLATFORM_TESTING_SOURCE_AUDIT.md'
+      - '.github/workflows/a17-platform-testing-source-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-official-source-and-pe-delta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out archived PE repo (audit branch only)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Read exactly the historic PE merge and both parents
+        run: |
+          git fetch -q --no-tags --depth=2 origin \
+            +refs/heads/seventeen:refs/remotes/origin/seventeen
+      - name: Fetch immutable official AOSP17 r1 object and tree
+        run: |
+          mkdir -p "$RUNNER_TEMP/aosp-platform-testing"
+          git -C "$RUNNER_TEMP/aosp-platform-testing" init -q
+          git -C "$RUNNER_TEMP/aosp-platform-testing" remote add origin \
+            https://android.googlesource.com/platform/platform_testing
+          git -C "$RUNNER_TEMP/aosp-platform-testing" fetch -q \
+            --depth=1 --filter=blob:none --no-tags origin \
+            refs/tags/android-17.0.0_r1
+      - name: Fetch reviewed AOSP17 manifest (no full repo sync)
+        run: |
+          git clone -q --depth=1 \
+            --branch port/a17-aosp17-manifest-20261102 \
+            https://github.com/PixelExperience-Reborn/manifest.git \
+            "$RUNNER_TEMP/manifest"
+      - name: Check exact source identities and ownership
+        run: |
+          python3 audit/check_platform_testing_source.py \
+            "$GITHUB_WORKSPACE" \
+            "$RUNNER_TEMP/aosp-platform-testing" \
+            "$RUNNER_TEMP/manifest"
+      - name: Run manifest negative regression tests (including platform_testing)
+        run: |
+          cd "$RUNNER_TEMP/manifest"
+          python3 -m unittest discover -s tools \
+            -p 'test_aosp17_manifest_entrypoint.py' -v
+      - name: Resolve actual default.xml with the official repo client
+        run: |
+          curl --fail --silent --show-error --location \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            --output "$RUNNER_TEMP/repo"
+          chmod +x "$RUNNER_TEMP/repo"
+          mkdir -p "$RUNNER_TEMP/repo-graph"
+          cd "$RUNNER_TEMP/repo-graph"
+          "$RUNNER_TEMP/repo" init -q --no-clone-bundle \
+            -u https://github.com/PixelExperience-Reborn/manifest \
+            -b port/a17-aosp17-manifest-20261102 -m default.xml
+          "$RUNNER_TEMP/repo" manifest -o "$RUNNER_TEMP/resolved.xml"
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import xml.etree.ElementTree as ET
+
+          resolved = Path(os.environ["RUNNER_TEMP"]) / "resolved.xml"
+          root = ET.parse(resolved).getroot()
+          projects = root.findall(".//project")
+          selected = [p for p in projects if (p.get("path") or p.get("name")) == "platform_testing"]
+          assert len(selected) == 1, f"platform_testing owner count {len(selected)}"
+          assert selected[0].get("name") == "platform/platform_testing", "old PE fork activated"
+          assert len(projects) == 1069, f"unexpected selected project count {len(projects)}"
+          print("PASS: official repo resolves one AOSP17 platform_testing and 1069 selected projects")
+          PY
+      - name: Declare scope
+        run: |
+          echo "SOURCE-ONLY: official git tree, historical PE diff and manifest."
+          echo "NOT TESTED: Soong/Make, full sync, Tradefed/CTS/VTS, mondrian boot."
