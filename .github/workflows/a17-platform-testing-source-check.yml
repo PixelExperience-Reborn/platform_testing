@@ -1,0 +1,58 @@
+name: Android 17 platform_testing source gate
+
+on:
+  push:
+    branches:
+      - audit/a17-platform-testing-source-20261106
+    paths:
+      - 'audit/check_platform_testing_source.py'
+      - 'docs/ANDROID_17_PLATFORM_TESTING_SOURCE_AUDIT.md'
+      - '.github/workflows/a17-platform-testing-source-check.yml'
+  pull_request:
+    paths:
+      - 'audit/check_platform_testing_source.py'
+      - 'docs/ANDROID_17_PLATFORM_TESTING_SOURCE_AUDIT.md'
+      - '.github/workflows/a17-platform-testing-source-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-official-source-and-pe-delta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out archived PE repo (audit branch only)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Read exactly the historic PE merge and both parents
+        run: |
+          git fetch -q --no-tags --depth=2 origin \
+            +refs/heads/seventeen:refs/remotes/origin/seventeen
+      - name: Fetch immutable official AOSP17 r1 object and tree
+        run: |
+          mkdir -p "$RUNNER_TEMP/aosp-platform-testing"
+          git -C "$RUNNER_TEMP/aosp-platform-testing" init -q
+          git -C "$RUNNER_TEMP/aosp-platform-testing" remote add origin \
+            https://android.googlesource.com/platform/platform_testing
+          git -C "$RUNNER_TEMP/aosp-platform-testing" fetch -q \
+            --depth=1 --filter=blob:none --no-tags origin \
+            refs/tags/android-17.0.0_r1
+      - name: Fetch reviewed AOSP17 manifest (no full repo sync)
+        run: |
+          git clone -q --depth=1 \
+            --branch port/a17-aosp17-manifest-20261102 \
+            https://github.com/PixelExperience-Reborn/manifest.git \
+            "$RUNNER_TEMP/manifest"
+      - name: Check exact source identities and ownership
+        run: |
+          python3 audit/check_platform_testing_source.py \
+            "$GITHUB_WORKSPACE" \
+            "$RUNNER_TEMP/aosp-platform-testing" \
+            "$RUNNER_TEMP/manifest"
+      - name: Declare scope
+        run: |
+          echo "SOURCE-ONLY: official git tree, historical PE diff and manifest."
+          echo "NOT TESTED: Soong/Make, full sync, Tradefed/CTS/VTS, mondrian boot."
