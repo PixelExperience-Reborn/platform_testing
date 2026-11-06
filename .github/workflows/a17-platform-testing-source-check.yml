@@ -52,6 +52,37 @@ jobs:
             "$GITHUB_WORKSPACE" \
             "$RUNNER_TEMP/aosp-platform-testing" \
             "$RUNNER_TEMP/manifest"
+      - name: Run manifest negative regression tests (including platform_testing)
+        run: |
+          cd "$RUNNER_TEMP/manifest"
+          python3 -m unittest discover -s tools \
+            -p 'test_aosp17_manifest_entrypoint.py' -v
+      - name: Resolve actual default.xml with the official repo client
+        run: |
+          curl --fail --silent --show-error --location \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            --output "$RUNNER_TEMP/repo"
+          chmod +x "$RUNNER_TEMP/repo"
+          mkdir -p "$RUNNER_TEMP/repo-graph"
+          cd "$RUNNER_TEMP/repo-graph"
+          "$RUNNER_TEMP/repo" init -q --no-clone-bundle \
+            -u https://github.com/PixelExperience-Reborn/manifest \
+            -b port/a17-aosp17-manifest-20261102 -m default.xml
+          "$RUNNER_TEMP/repo" manifest -o "$RUNNER_TEMP/resolved.xml"
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import xml.etree.ElementTree as ET
+
+          resolved = Path(os.environ["RUNNER_TEMP"]) / "resolved.xml"
+          root = ET.parse(resolved).getroot()
+          projects = root.findall(".//project")
+          selected = [p for p in projects if (p.get("path") or p.get("name")) == "platform_testing"]
+          assert len(selected) == 1, f"platform_testing owner count {len(selected)}"
+          assert selected[0].get("name") == "platform/platform_testing", "old PE fork activated"
+          assert len(projects) == 1069, f"unexpected selected project count {len(projects)}"
+          print("PASS: official repo resolves one AOSP17 platform_testing and 1069 selected projects")
+          PY
       - name: Declare scope
         run: |
           echo "SOURCE-ONLY: official git tree, historical PE diff and manifest."
